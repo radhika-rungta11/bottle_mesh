@@ -1,0 +1,28 @@
+body {
+    margin: 0;
+    overflow: hidden;
+    background-color: #020617;
+    color: white;
+    font-family: sans-serif;
+}
+
+canvas {
+    display: block;
+}
+
+.glass {
+    background: rgba(15, 23, 42, 0.9);
+    backdrop-filter: blur(12px);
+    border: 1px solid rgba(255,255,255,0.1);
+}
+
+input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 16px;
+    height: 16px;
+    background: #60A5FA;
+    cursor: pointer;
+    border-radius: 50%;
+    border: 2px solid white;
+}
