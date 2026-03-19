@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Textured Bottle Asset Builder</title>
+
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@0.150.1/build/three.module.js",
+                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.150.1/examples/jsm/"
+            }
+        }
+    </script>
+
+    <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+    <div id="ui-container" class="absolute top-4 left-4 z-10 flex flex-col gap-4 w-80">
+        <div class="glass p-5 rounded-2xl shadow-2xl border-l-4 border-l-blue-500">
+            <h1 class="text-lg font-bold mb-1 text-white tracking-tight">Textured Asset Builder</h1>
+            <p class="text-[11px] text-slate-400 mb-4 leading-relaxed">
+                Upload your optimized OBJ, a rectangular wrap label, and optionally the original OBJ as a reference wireframe.
+            </p>
+
+            <label class="block w-full text-center py-3 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 cursor-pointer transition-all font-bold text-xs uppercase tracking-widest shadow-lg active:scale-95 mb-3">
+                1. Upload Optimized OBJ
+                <input type="file" id="optimizedObjInput" accept=".obj" class="hidden" />
+            </label>
+
+            <label class="block w-full text-center py-3 px-4 rounded-xl bg-blue-600 hover:bg-blue-500 cursor-pointer transition-all font-bold text-xs uppercase tracking-widest shadow-lg active:scale-95 mb-3">
+                2. Upload Body Label Texture
+                <input type="file" id="labelTextureInput" accept="image/png,image/jpeg,image/webp" class="hidden" />
+            </label>
+
+            <label class="block w-full text-center py-3 px-4 rounded-xl bg-slate-700 hover:bg-slate-600 cursor-pointer transition-all font-bold text-xs uppercase tracking-widest shadow-lg active:scale-95">
+                3. Upload Original OBJ (Optional)
+                <input type="file" id="originalObjInput" accept=".obj" class="hidden" />
+            </label>
+
+            <p id="debugStatus" class="text-[9px] text-blue-300 mt-3 font-mono break-all bg-black/40 p-2 rounded-lg border border-white/5 whitespace-pre-wrap max-h-40 overflow-y-auto"></p>
+        </div>
+
+        <div id="controls" class="glass p-5 rounded-2xl shadow-2xl hidden flex flex-col gap-5">
+            <div>
+                <div class="flex justify-between items-center mb-2">
+                    <label class="text-[10px] font-bold uppercase tracking-widest text-slate-400">Top cap region</label>
+                    <span id="topRegionDisplay" class="text-xs font-mono bg-blue-500/20 px-2 py-0.5 rounded text-blue-300">12%</span>
+                </div>
+                <input
+                    type="range"
+                    id="topRegionSlider"
+                    min="0"
+                    max="25"
+                    step="1"
+                    value="12"
+                    class="w-full h-1.5 bg-slate-700 rounded-lg appearance-none cursor-pointer"
+                />
+            </div>
+
+            <div>
+                <div class="flex justify-between items-center mb-2">
+                    <label class="text-[10px] font-bold uppercase tracking-widest text-slate-400">Bottom region</label>
+                    <span id="bottomRegionDisplay" class="text-xs font-mono bg-blue-500/20 px-2 py-0.5 rounded text-blue-300">4%</span>
+                </div>
+                <input
+                    type="range"
+                    id="bottomRegionSlider"
+                    min="0"
+                    max="15"
+                    step="1"
+                    value="4"
+                    class="w-full h-1.5 bg-slate-700 rounded-lg appearance-none cursor-pointer"
+                />
+            </div>
+
+            <div>
+                <label class="text-[10px] font-bold uppercase tracking-widest text-slate-400 block mb-2">Cap / top-bottom color</label>
+                <input type="color" id="capColorInput" value="#d4d4d8" class="w-full h-10 rounded-lg cursor-pointer bg-transparent border border-slate-700" />
+            </div>
+
+            <div class="flex flex-col gap-3 border-t border-slate-700/50 pt-4">
+                <label class="flex items-center gap-3 cursor-pointer group">
+                    <input type="checkbox" id="showReference" checked class="w-4 h-4 rounded border-slate-600 bg-slate-800" />
+                    <span class="text-xs font-medium text-slate-300">Show original reference wireframe</span>
+                </label>
+            </div>
+
+            <button id="rebuildBtn" class="w-full py-3 bg-violet-600 hover:bg-violet-500 rounded-xl font-bold text-xs uppercase tracking-widest shadow-lg">
+                Rebuild Textured Asset
+            </button>
+
+            <button id="exportGlbBtn" class="w-full py-3 bg-emerald-600 hover:bg-emerald-500 rounded-xl font-bold text-xs uppercase tracking-widest shadow-lg">
+                Export as .GLB
+            </button>
+        </div>
+    </div>
+
+    <div id="loading" class="fixed inset-0 flex items-center justify-center bg-slate-950/80 z-50 hidden">
+        <div class="glass p-8 rounded-3xl flex flex-col items-center">
+            <div class="animate-spin rounded-full h-10 w-10 border-2 border-transparent border-t-blue-500 mb-4"></div>
+            <p id="loadingText" class="text-xs font-bold tracking-widest text-blue-400 uppercase">Processing...</p>
+        </div>
+    </div>
+
+    <script type="module" src="./textured.js"></script>
+</body>
+</html>
