@@ -3,6 +3,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import * as BufferGeometryUtils from 'three/addons/utils/BufferGeometryUtils.js';
+import { USDZLoader } from 'three/addons/loaders/USDZLoader.js';
 
 let scene;
 let camera;
@@ -11,25 +12,80 @@ let orbitControls;
 
 let objLoader;
 let gltfExporter;
+let usdzLoader;
 
-let originalReferenceMesh = null;
 let optimizedGeometryBase = null;
 let processedAssetGroup = null;
-let bodyTexture = null;
+
+let originalUsdWireframe = null;
+let sourceUsdTexture = null;
 
 function log(msg) {
     const debugEl = document.getElementById('debugStatus');
+    if (!debugEl) {
+        console.log(msg);
+        return;
+    }
+
     const timestamp = new Date().toLocaleTimeString([], {
         hour12: false,
         minute: '2-digit',
         second: '2-digit'
     });
+
     debugEl.innerText = `[${timestamp}] ${msg}\n` + debugEl.innerText;
 }
 
 function showLoading(show, text = 'Processing...') {
-    document.getElementById('loadingText').textContent = text;
-    document.getElementById('loading').style.display = show ? 'flex' : 'none';
+    const loadingEl = document.getElementById('loading');
+    const loadingTextEl = document.getElementById('loadingText');
+
+    if (loadingTextEl) {
+        loadingTextEl.textContent = text;
+    }
+
+    if (loadingEl) {
+        loadingEl.style.display = show ? 'flex' : 'none';
+    }
+}
+
+function setControlsVisible() {
+    const controls = document.getElementById('controls');
+    if (controls) {
+        controls.classList.remove('hidden');
+    }
+}
+
+function setButtonState(hasOptimizedObj, hasProcessedAsset = false) {
+    const rebuildBtn = document.getElementById('rebuildBtn');
+    const exportGlbBtn = document.getElementById('exportGlbBtn');
+
+    if (rebuildBtn) {
+        rebuildBtn.disabled = !hasOptimizedObj;
+        rebuildBtn.style.opacity = hasOptimizedObj ? '1' : '0.5';
+        rebuildBtn.style.cursor = hasOptimizedObj ? 'pointer' : 'not-allowed';
+    }
+
+    if (exportGlbBtn) {
+        exportGlbBtn.disabled = !hasProcessedAsset;
+        exportGlbBtn.style.opacity = hasProcessedAsset ? '1' : '0.5';
+        exportGlbBtn.style.cursor = hasProcessedAsset ? 'pointer' : 'not-allowed';
+    }
+}
+
+function updateSliderDisplays() {
+    const topRegionSlider = document.getElementById('topRegionSlider');
+    const bottomRegionSlider = document.getElementById('bottomRegionSlider');
+    const topRegionDisplay = document.getElementById('topRegionDisplay');
+    const bottomRegionDisplay = document.getElementById('bottomRegionDisplay');
+
+    if (topRegionSlider && topRegionDisplay) {
+        topRegionDisplay.textContent = `${topRegionSlider.value}%`;
+    }
+
+    if (bottomRegionSlider && bottomRegionDisplay) {
+        bottomRegionDisplay.textContent = `${bottomRegionSlider.value}%`;
+    }
 }
 
 function init() {
@@ -44,9 +100,23 @@ function init() {
     );
     camera.position.set(3, 3, 3);
 
-    renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer = new THREE.WebGLRenderer({
+        antialias: true,
+        preserveDrawingBuffer: true
+    });
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.setPixelRatio(window.devicePixelRatio);
+
+    if ('outputColorSpace' in renderer) {
+        renderer.outputColorSpace = THREE.SRGBColorSpace;
+    } else {
+        renderer.outputEncoding = THREE.sRGBEncoding;
+    }
+
+    renderer.domElement.style.position = 'fixed';
+    renderer.domElement.style.inset = '0';
+    renderer.domElement.style.zIndex = '0';
+
     document.body.appendChild(renderer.domElement);
 
     orbitControls = new OrbitControls(camera, renderer.domElement);
@@ -64,54 +134,103 @@ function init() {
 
     objLoader = new OBJLoader();
     gltfExporter = new GLTFExporter();
+    usdzLoader = new USDZLoader();
 
     bindUI();
-    animate();
+    updateSliderDisplays();
+    setControlsVisible();
+    setButtonState(false, false);
 
+    animate();
     window.addEventListener('resize', onWindowResize);
+
+    log('Ready. Upload the optimized OBJ first. Then upload the original USDZ. Rebuild and export.');
 }
 
 function bindUI() {
-    document.getElementById('optimizedObjInput').addEventListener('change', (e) => {
-        const file = e.target.files[0];
-        if (!file) return;
-        loadOBJFile(file, 'optimized');
-    });
+    const optimizedObjInput = document.getElementById('optimizedObjInput');
+    const originalUsdInput = document.getElementById('originalUsdInput');
+    const topRegionSlider = document.getElementById('topRegionSlider');
+    const bottomRegionSlider = document.getElementById('bottomRegionSlider');
+    const capColorInput = document.getElementById('capColorInput');
+    const showReference = document.getElementById('showReference');
+    const rebuildBtn = document.getElementById('rebuildBtn');
+    const exportGlbBtn = document.getElementById('exportGlbBtn');
 
-    document.getElementById('originalObjInput').addEventListener('change', (e) => {
-        const file = e.target.files[0];
-        if (!file) return;
-        loadOBJFile(file, 'original');
-    });
+    if (!optimizedObjInput) log('Missing HTML element: #optimizedObjInput');
+    if (!originalUsdInput) log('Missing HTML element: #originalUsdInput');
+    if (!topRegionSlider) log('Missing HTML element: #topRegionSlider');
+    if (!bottomRegionSlider) log('Missing HTML element: #bottomRegionSlider');
+    if (!capColorInput) log('Missing HTML element: #capColorInput');
+    if (!showReference) log('Missing HTML element: #showReference');
+    if (!rebuildBtn) log('Missing HTML element: #rebuildBtn');
+    if (!exportGlbBtn) log('Missing HTML element: #exportGlbBtn');
 
-    document.getElementById('labelTextureInput').addEventListener('change', (e) => {
-        const file = e.target.files[0];
-        if (!file) return;
-        loadLabelTexture(file);
-    });
+    if (optimizedObjInput) {
+        optimizedObjInput.addEventListener('change', (e) => {
+            const file = e.target.files?.[0];
+            if (!file) return;
+            loadOptimizedOBJ(file);
+        });
+    }
 
-    document.getElementById('topRegionSlider').addEventListener('input', () => {
-        document.getElementById('topRegionDisplay').textContent =
-            `${document.getElementById('topRegionSlider').value}%`;
-    });
+    if (originalUsdInput) {
+        originalUsdInput.addEventListener('change', (e) => {
+            const file = e.target.files?.[0];
+            if (!file) return;
+            loadUSDFile(file);
+        });
+    }
 
-    document.getElementById('bottomRegionSlider').addEventListener('input', () => {
-        document.getElementById('bottomRegionDisplay').textContent =
-            `${document.getElementById('bottomRegionSlider').value}%`;
-    });
+    if (topRegionSlider) {
+        topRegionSlider.addEventListener('input', updateSliderDisplays);
+        topRegionSlider.addEventListener('change', () => {
+            if (optimizedGeometryBase) {
+                rebuildProcessedAsset();
+            }
+        });
+    }
 
-    document.getElementById('topRegionSlider').addEventListener('change', rebuildProcessedAsset);
-    document.getElementById('bottomRegionSlider').addEventListener('change', rebuildProcessedAsset);
-    document.getElementById('capColorInput').addEventListener('input', rebuildProcessedAsset);
+    if (bottomRegionSlider) {
+        bottomRegionSlider.addEventListener('input', updateSliderDisplays);
+        bottomRegionSlider.addEventListener('change', () => {
+            if (optimizedGeometryBase) {
+                rebuildProcessedAsset();
+            }
+        });
+    }
 
-    document.getElementById('showReference').addEventListener('change', (e) => {
-        if (originalReferenceMesh) {
-            originalReferenceMesh.visible = e.target.checked;
-        }
-    });
+    if (capColorInput) {
+        capColorInput.addEventListener('input', () => {
+            if (optimizedGeometryBase) {
+                rebuildProcessedAsset();
+            }
+        });
+    }
 
-    document.getElementById('rebuildBtn').addEventListener('click', rebuildProcessedAsset);
-    document.getElementById('exportGlbBtn').addEventListener('click', exportGLB);
+    if (showReference) {
+        showReference.addEventListener('change', (e) => {
+            if (originalUsdWireframe) {
+                originalUsdWireframe.visible = e.target.checked;
+            }
+        });
+    }
+
+    if (rebuildBtn) {
+        rebuildBtn.addEventListener('click', () => {
+            if (!optimizedGeometryBase) {
+                log('Upload the optimized OBJ first.');
+                return;
+            }
+            rebuildProcessedAsset();
+        });
+    }
+
+    if (exportGlbBtn) {
+        exportGlbBtn.addEventListener('click', () => {
+            exportGLB();
+        });
+    }
 }
 
 function animate() {
@@ -120,9 +239,18 @@ function animate() {
     renderer.render(scene, camera);
 }
 
-function loadOBJFile(file, kind) {
+function loadOptimizedOBJ(file) {
+    const fileName = file.name.toLowerCase();
+
+    if (!fileName.endsWith('.obj')) {
+        alert('Please upload an OBJ file.');
+        log(`Rejected file: ${file.name}. Expected .obj`);
+        return;
+    }
+
     const url = URL.createObjectURL(file);
-    showLoading(true, `Loading ${kind} OBJ...`);
+    showLoading(true, 'Loading optimized OBJ...');
+    setButtonState(false, false);
 
     objLoader.load(
         url,
@@ -132,7 +260,9 @@ function loadOBJFile(file, kind) {
 
                 if (!mergedGeometry) {
                     log(`No mesh geometry found in ${file.name}`);
+                    optimizedGeometryBase = null;
                     showLoading(false);
+                    setButtonState(false, false);
                     URL.revokeObjectURL(url);
                     return;
                 }
@@ -140,21 +270,85 @@ function loadOBJFile(file, kind) {
                 mergedGeometry.computeBoundingBox();
                 mergedGeometry.computeVertexNormals();
 
-                if (kind === 'original') {
-                    setOriginalReference(mergedGeometry);
-                    log(`Loaded original OBJ: ${file.name}`);
+                optimizedGeometryBase = mergedGeometry;
+
+                log(`Loaded optimized OBJ: ${file.name}`);
+                showLoading(false);
+                URL.revokeObjectURL(url);
+
+                rebuildProcessedAsset();
+            } catch (error) {
+                console.error(error);
+                optimizedGeometryBase = null;
+                log(`Error while processing ${file.name}: ${error.message}`);
+                showLoading(false);
+                setButtonState(false, false);
+                URL.revokeObjectURL(url);
+            }
+        },
+        undefined,
+        (error) => {
+            console.error(error);
+            optimizedGeometryBase = null;
+            log(`Failed to load optimized OBJ: ${file.name}`);
+            showLoading(false);
+            setButtonState(false, false);
+            URL.revokeObjectURL(url);
+        }
+    );
+}
+
+function loadUSDFile(file) {
+    const fileName = file.name.toLowerCase();
+
+    if (!fileName.endsWith('.usdz')) {
+        alert('Please upload a .usdz file only.');
+        log(`Rejected file: ${file.name}. This page currently supports USDZ only.`);
+        return;
+    }
+
+    const url = URL.createObjectURL(file);
+    showLoading(true, 'Loading original USDZ...');
+
+    usdzLoader.load(
+        url,
+        async (usdObject) => {
+            try {
+                const root = usdObject?.scene || usdObject;
+
+                if (!root) {
+                    throw new Error('USDZ loaded but no scene/object was returned.');
+                }
+
+                setOriginalUsdReference(root);
+
+                const extractedTexture = extractTextureFromUSD(root);
+
+                if (extractedTexture) {
+                    const exportableTexture = await makeExportableTexture(extractedTexture);
+
+                    if (exportableTexture) {
+                        sourceUsdTexture = exportableTexture;
+                        log(`USDZ texture extracted and prepared successfully from ${file.name}`);
+                    } else {
+                        sourceUsdTexture = null;
+                        log(`A texture was found in ${file.name}, but it could not be prepared for export.`);
+                    }
                 } else {
-                    optimizedGeometryBase = mergedGeometry;
-                    document.getElementById('controls').classList.remove('hidden');
-                    rebuildProcessedAsset();
-                    log(`Loaded optimized OBJ: ${file.name}`);
+                    sourceUsdTexture = null;
+                    log(`USDZ loaded, but no usable texture map was found in ${file.name}`);
                 }
 
                 showLoading(false);
                 URL.revokeObjectURL(url);
+
+                if (optimizedGeometryBase) {
+                    rebuildProcessedAsset();
+                }
             } catch (error) {
                 console.error(error);
-                log(`Error while processing ${file.name}`);
+                sourceUsdTexture = null;
+                log(`Error while processing USDZ: ${error.message}`);
                 showLoading(false);
                 URL.revokeObjectURL(url);
             }
@@ -162,7 +356,8 @@ function loadOBJFile(file, kind) {
         undefined,
         (error) => {
             console.error(error);
-            log(`Failed to load ${file.name}`);
+            sourceUsdTexture = null;
+            log(`Failed to load USDZ: ${file.name}`);
             showLoading(false);
             URL.revokeObjectURL(url);
         }
@@ -205,9 +400,46 @@ function collectMergedGeometry(object) {
     throw new Error('No merge geometry function available in BufferGeometryUtils.');
 }
 
-function setOriginalReference(geometry) {
-    if (originalReferenceMesh) {
-        scene.remove(originalReferenceMesh);
+function clearProcessedAsset() {
+    if (!processedAssetGroup) return;
+
+    scene.remove(processedAssetGroup);
+
+    processedAssetGroup.traverse((child) => {
+        if (child.isMesh) {
+            if (child.geometry) child.geometry.dispose();
+
+            if (Array.isArray(child.material)) {
+                child.material.forEach((mat) => mat.dispose && mat.dispose());
+            } else if (child.material) {
+                child.material.dispose && child.material.dispose();
+            }
+        }
+    });
+
+    processedAssetGroup = null;
+}
+
+function setOriginalUsdReference(root) {
+    if (originalUsdWireframe) {
+        scene.remove(originalUsdWireframe);
+
+        if (originalUsdWireframe.geometry) {
+            originalUsdWireframe.geometry.dispose();
+        }
+
+        if (originalUsdWireframe.material) {
+            originalUsdWireframe.material.dispose();
+        }
+
+        originalUsdWireframe = null;
+    }
+
+    const mergedGeometry = collectMergedGeometry(root);
+
+    if (!mergedGeometry) {
+        log('USDZ reference loaded, but no mesh geometry was found for wireframe preview.');
+        return;
     }
 
     const material = new THREE.MeshBasicMaterial({
@@ -218,64 +450,126 @@ function setOriginalReference(geometry) {
         depthWrite: false
     });
 
-    originalReferenceMesh = new THREE.Mesh(geometry, material);
-    originalReferenceMesh.visible = document.getElementById('showReference').checked;
-    originalReferenceMesh.name = 'Original_Reference';
+    originalUsdWireframe = new THREE.Mesh(mergedGeometry, material);
+    originalUsdWireframe.name = 'Original_USDZ_Reference';
+    originalUsdWireframe.visible = document.getElementById('showReference')?.checked ?? true;
 
-    scene.add(originalReferenceMesh);
+    scene.add(originalUsdWireframe);
 
     if (!processedAssetGroup) {
-        frameObject(originalReferenceMesh);
+        frameObject(originalUsdWireframe);
     }
 }
 
-function loadLabelTexture(file) {
-    const url = URL.createObjectURL(file);
-    const textureLoader = new THREE.TextureLoader();
+function extractTextureFromUSD(root) {
+    let foundTexture = null;
+    let foundFrom = '';
 
-    showLoading(true, 'Loading body label texture...');
+    root.traverse((child) => {
+        if (foundTexture || !child.isMesh || !child.material) return;
 
-    textureLoader.load(
-        
-        url,
-        (texture) => {
-            texture.wrapS = THREE.RepeatWrapping;
-            texture.wrapT = THREE.ClampToEdgeWrapping;
-            // texture.flipY = false;
+        const materials = Array.isArray(child.material)
+            ? child.material
+            : [child.material];
 
-            if ('colorSpace' in texture) {
-                texture.colorSpace = THREE.SRGBColorSpace;
-            } else {
-                texture.encoding = THREE.sRGBEncoding;
+        for (const material of materials) {
+            if (!material) continue;
+
+            const candidates = [
+                ['map', material.map],
+                ['emissiveMap', material.emissiveMap],
+                ['specularColorMap', material.specularColorMap],
+                ['metalnessMap', material.metalnessMap],
+                ['roughnessMap', material.roughnessMap]
+            ];
+             for (const [slotName, tex] of candidates) {
+                if (tex && tex.image) {
+                    foundTexture = tex;
+                    foundFrom = `${child.name || 'unnamed-mesh'} -> ${material.name || material.type} -> ${slotName}`;
+                    break;
+                }
             }
 
-            texture.needsUpdate = true;
-            bodyTexture = texture;
-
-            log(`Loaded label texture: ${file.name}`);
-            showLoading(false);
-            URL.revokeObjectURL(url);
-
-            rebuildProcessedAsset();
-        },
-        undefined,
-        (error) => {
-            console.error(error);
-            log(`Failed to load label texture: ${file.name}`);
-            showLoading(false);
-            URL.revokeObjectURL(url);
+            if (foundTexture) break;
         }
-    );
-}
+    });
 
+    if (foundTexture) {
+        const img = foundTexture.image;
+        const w = img?.naturalWidth || img?.videoWidth || img?.width || '?';
+        const h = img?.naturalHeight || img?.videoHeight || img?.height || '?';
+        log(`Found texture in USDZ: ${foundFrom} (${w}x${h})`);
+        return foundTexture;
+    }
+
+    log('No usable bitmap texture was found inside the USDZ materials.');
+    return null;
+
+} 
+async function makeExportableTexture(texture) {
+    if (!texture || !texture.image) {
+        return null;
+    }
+
+    const image = texture.image;
+    const width = image.naturalWidth || image.videoWidth || image.width;
+    const height = image.naturalHeight || image.videoHeight || image.height;
+
+    if (!width || !height) {
+        log('Texture was found, but its image has no valid size.');
+        return null;
+    }
+
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+        log('Failed to create canvas context for texture conversion.');
+        return null;
+    }
+
+    try {
+        ctx.drawImage(image, 0, 0, width, height);
+    } catch (error) {
+        console.error(error);
+        log(`Failed to draw USDZ texture onto canvas: ${error.message}`);
+        return null;
+    }
+
+    const safeTexture = new THREE.CanvasTexture(canvas);
+    safeTexture.wrapS = texture.wrapS ?? THREE.RepeatWrapping;
+    safeTexture.wrapT = texture.wrapT ?? THREE.ClampToEdgeWrapping;
+    safeTexture.flipY = texture.flipY;
+    safeTexture.needsUpdate = true;
+
+    if ('colorSpace' in safeTexture) {
+        safeTexture.colorSpace = THREE.SRGBColorSpace;
+    } else {
+        safeTexture.encoding = THREE.sRGBEncoding;
+    }
+
+    log(`Prepared texture for GLB export (${width}x${height}).`);
+    return safeTexture;
+}
 function rebuildProcessedAsset() {
     if (!optimizedGeometryBase) {
         log('Upload the optimized OBJ first.');
+        setButtonState(false, false);
         return;
     }
 
-    if (processedAssetGroup) {
-        scene.remove(processedAssetGroup);
+    clearProcessedAsset();
+
+    const topRegionSlider = document.getElementById('topRegionSlider');
+    const bottomRegionSlider = document.getElementById('bottomRegionSlider');
+    const capColorInput = document.getElementById('capColorInput');
+
+    if (!topRegionSlider || !bottomRegionSlider || !capColorInput) {
+        log('Missing one or more UI inputs needed for rebuild.');
+        setButtonState(true, false);
+        return;
     }
 
     const geometry = optimizedGeometryBase.clone();
@@ -284,8 +578,8 @@ function rebuildProcessedAsset() {
     const box = geometry.boundingBox.clone();
     const totalHeight = Math.max(box.max.y - box.min.y, 0.0001);
 
-    const topPercent = parseFloat(document.getElementById('topRegionSlider').value) / 100;
-    const bottomPercent = parseFloat(document.getElementById('bottomRegionSlider').value) / 100;
+    const topPercent = parseFloat(topRegionSlider.value) / 100;
+    const bottomPercent = parseFloat(bottomRegionSlider.value) / 100;
 
     const bodyMinY = box.min.y + totalHeight * bottomPercent;
     const bodyMaxY = box.max.y - totalHeight * topPercent;
@@ -299,11 +593,15 @@ function rebuildProcessedAsset() {
         const bodyGeometry = buildGeometryFromArrays(split.body);
 
         const bodyMaterial = new THREE.MeshStandardMaterial({
-            color: bodyTexture ? 0xffffff : 0xd4d4d8,
-            map: bodyTexture || null,
+            color: sourceUsdTexture ? 0xffffff : 0xd4d4d8,
+            map: sourceUsdTexture || null,
             roughness: 0.62,
             metalness: 0.06
         });
+
+        if (sourceUsdTexture) {
+            sourceUsdTexture.needsUpdate = true;
+        }
 
         const bodyMesh = new THREE.Mesh(bodyGeometry, bodyMaterial);
         bodyMesh.name = 'Bottle_Body';
@@ -314,7 +612,7 @@ function rebuildProcessedAsset() {
         const capGeometry = buildGeometryFromArrays(split.cap);
 
         const capMaterial = new THREE.MeshStandardMaterial({
-            color: new THREE.Color(document.getElementById('capColorInput').value),
+            color: new THREE.Color(capColorInput.value),
             roughness: 0.75,
             metalness: 0.03
         });
@@ -324,6 +622,12 @@ function rebuildProcessedAsset() {
         processedAssetGroup.add(capMesh);
     }
 
+    if (processedAssetGroup.children.length === 0) {
+        log('Rebuild finished, but no output meshes were generated.');
+        setButtonState(true, false);
+        return;
+    }
+
     scene.add(processedAssetGroup);
     frameObject(processedAssetGroup);
 
@@ -331,13 +635,16 @@ function rebuildProcessedAsset() {
     const capTriangleCount = split.cap.positions.length / 9;
 
     log(
-        `Rebuilt textured asset | body triangles: ${bodyTriangleCount} | cap/top-bottom triangles: ${capTriangleCount}`
+        `Rebuilt textured asset | body triangles: ${bodyTriangleCount} | cap/top-bottom triangles: ${capTriangleCount} | texture: ${sourceUsdTexture ? 'USDZ texture applied' : 'no USDZ texture found'}`
     );
+
+    setButtonState(true, true);
 }
 
 function splitGeometryIntoRegions(geometry, box, bodyMinY, bodyMaxY) {
     const positionArray = geometry.attributes.position.array;
     const normalArray = geometry.attributes.normal.array;
+    const uvArray = geometry.attributes.uv ? geometry.attributes.uv.array : null;
 
     const centerX = (box.min.x + box.max.x) * 0.5;
     const centerZ = (box.min.z + box.max.z) * 0.5;
@@ -355,7 +662,7 @@ function splitGeometryIntoRegions(geometry, box, bodyMinY, bodyMaxY) {
         uvs: []
     };
 
-    for (let i = 0; i < positionArray.length; i += 9) {
+    for (let i = 0, uvIndex = 0; i < positionArray.length; i += 9, uvIndex += 6) {
         const p0 = new THREE.Vector3(positionArray[i], positionArray[i + 1], positionArray[i + 2]);
         const p1 = new THREE.Vector3(positionArray[i + 3], positionArray[i + 4], positionArray[i + 5]);
         const p2 = new THREE.Vector3(positionArray[i + 6], positionArray[i + 7], positionArray[i + 8]);
@@ -366,7 +673,15 @@ function splitGeometryIntoRegions(geometry, box, bodyMinY, bodyMaxY) {
         const n1 = [normalArray[i + 3], normalArray[i + 4], normalArray[i + 5]];
         const n2 = [normalArray[i + 6], normalArray[i + 7], normalArray[i + 8]];
 
-        if (centroidY >= bodyMinY && centroidY <= bodyMaxY) {
+        let uv0;
+        let uv1;
+        let uv2;
+
+        if (uvArray) {
+            uv0 = [uvArray[uvIndex], uvArray[uvIndex + 1]];
+            uv1 = [uvArray[uvIndex + 2], uvArray[uvIndex + 3]];
+            uv2 = [uvArray[uvIndex + 4], uvArray[uvIndex + 5]];
+        } else if (centroidY >= bodyMinY && centroidY <= bodyMaxY) {
             const uvSet = makeCylinderTriangleUVs(
                 p0,
                 p1,
@@ -376,16 +691,24 @@ function splitGeometryIntoRegions(geometry, box, bodyMinY, bodyMaxY) {
                 bodyMinY,
                 bodyHeight
             );
-
-            pushVertex(body, p0, n0, uvSet[0]);
-            pushVertex(body, p1, n1, uvSet[1]);
-            pushVertex(body, p2, n2, uvSet[2]);
+            uv0 = uvSet[0];
+            uv1 = uvSet[1];
+            uv2 = uvSet[2];
         } else {
             const uvSet = makePlanarTriangleUVs(p0, p1, p2, box);
+            uv0 = uvSet[0];
+            uv1 = uvSet[1];
+            uv2 = uvSet[2];
+        }
 
-            pushVertex(cap, p0, n0, uvSet[0]);
-            pushVertex(cap, p1, n1, uvSet[1]);
-            pushVertex(cap, p2, n2, uvSet[2]);
+        if (centroidY >= bodyMinY && centroidY <= bodyMaxY) {
+            pushVertex(body, p0, n0, uv0);
+            pushVertex(body, p1, n1, uv1);
+            pushVertex(body, p2, n2, uv2);
+        } else {
+            pushVertex(cap, p0, n0, uv0);
+            pushVertex(cap, p1, n1, uv1);
+            pushVertex(cap, p2, n2, uv2);
         }
     }
 
@@ -471,47 +794,55 @@ function buildGeometryFromArrays(data) {
 }
 
 function exportGLB() {
-    if (!processedAssetGroup) {
-        log('Nothing to export. Upload the optimized OBJ first.');
+    if (!processedAssetGroup || processedAssetGroup.children.length === 0) {
+        alert('Nothing to export yet. First upload OBJ and rebuild the textured asset.');
+        console.log('Export blocked: no processed asset found.');
         return;
     }
 
+    console.log('Starting GLB export...', processedAssetGroup);
     showLoading(true, 'Exporting GLB...');
 
     try {
+        const exportRoot = processedAssetGroup.clone(true);
+        exportRoot.updateMatrixWorld(true);
+
         gltfExporter.parse(
-            processedAssetGroup,
+            exportRoot,
             (result) => {
-                let blob;
+                try {
+                    const blob = new Blob(
+                        [result],
+                        { type: 'model/gltf-binary' }
+                    );
 
-                if (result instanceof ArrayBuffer) {
-                    blob = new Blob([result], { type: 'model/gltf-binary' });
-                    downloadBlob(blob, 'optimized_textured.glb');
-                    log('Exported optimized_textured.glb');
-                } else {
-                    const json = JSON.stringify(result, null, 2);
-                    blob = new Blob([json], { type: 'application/json' });
-                    downloadBlob(blob, 'optimized_textured.gltf');
-                    log('Exporter returned JSON instead of binary, so exported optimized_textured.gltf');
+                    const fileName = 'optimized_textured.glb';
+                    downloadBlob(blob, fileName);
+
+                    console.log('Export finished:', fileName, 'size:', blob.size);
+                    log(`Exported ${fileName} successfully`);
+                    alert(`Exported ${fileName}`);
+                } catch (err) {
+                    console.error('Download failed:', err);
+                    alert('Export created data, but download failed. Check console.');
+                } finally {
+                    showLoading(false);
                 }
-
-                showLoading(false);
             },
             (error) => {
-                console.error(error);
-                log('GLB export failed.');
+                console.error('GLTFExporter error:', error);
+                alert('GLB export failed. Check console.');
                 showLoading(false);
             },
             {
                 binary: true,
-                onlyVisible: true,
-                embedImages: true
+                onlyVisible: true
             }
         );
     } catch (error) {
-        console.error(error);
+        console.error('Export exception:', error);
+        alert(`GLB export failed: ${error.message}`);
         showLoading(false);
-        log('GLB export failed.');
     }
 }
 
@@ -521,9 +852,12 @@ function downloadBlob(blob, fileName) {
     const link = document.createElement('a');
     link.href = url;
     link.download = fileName;
+    link.rel = 'noopener';
+    document.body.appendChild(link);
     link.click();
+    document.body.removeChild(link);
 
-    URL.revokeObjectURL(url);
+    setTimeout(() => URL.revokeObjectURL(url), 3000);
 }
 
 function frameObject(object3D) {
@@ -555,4 +889,4 @@ function onWindowResize() {
     renderer.setSize(window.innerWidth, window.innerHeight);
 }
 
-window.onload = init;
+window.addEventListener('DOMContentLoaded', init);
