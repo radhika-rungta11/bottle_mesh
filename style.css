@@ -10,10 +10,15 @@ canvas {
     display: block;
 }
 
+#ui-container {
+    max-height: calc(100vh - 2rem);
+    overflow-y: auto;
+}
+
 .glass {
     background: rgba(15, 23, 42, 0.9);
     backdrop-filter: blur(12px);
-    border: 1px solid rgba(255,255,255,0.1);
+    border: 1px solid rgba(255, 255, 255, 0.1);
 }
 
 input[type="range"]::-webkit-slider-thumb {
@@ -25,4 +30,9 @@ input[type="range"]::-webkit-slider-thumb {
     cursor: pointer;
     border-radius: 50%;
     border: 2px solid white;
+}
+
+input[type="color"] {
+    padding: 0;
+    background: transparent;
 }
